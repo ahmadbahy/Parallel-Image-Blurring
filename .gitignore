@@ -1,0 +1,34 @@
+# ──── Build artifacts ────
+master
+worker
+*.o
+*.out
+
+# ──── Output / experiment results ────
+input_output/results/
+input_output/log_file.txt
+
+# ──── Docker working directories ────
+**/docker_work/
+**/chunks/
+
+# ──── OS files ────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ──── IDE / Editor files ────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# ──── Compiled / temporary ────
+*.gch
+*.pch
+core
+core.*
