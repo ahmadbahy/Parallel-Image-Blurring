@@ -1,0 +1,30 @@
+# Large runtime data
+input_output/
+results/
+output/
+outputs/
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+
+# Logs
+*.log
+log_file.txt
+
+# Build artifacts
+master
+worker
+*.o
+*.out
+build/
+cmake-build-*/
+
+# Git/editor files
+.git/
+.vscode/
+.idea/
