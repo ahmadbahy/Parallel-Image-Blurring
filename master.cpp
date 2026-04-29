@@ -14,10 +14,11 @@
 #include <vector>
 #include <cstdlib>
 #include <algorithm>
+#include <iomanip>
 
 namespace fs = std::filesystem;
 
-// ───── Docker chunk info ─────
+// docker chunk info
 struct ChunkInfo {
     int id;
     int output_start_row;
@@ -29,7 +30,7 @@ struct ChunkInfo {
     fs::path meta_path;
 };
 
-// ───── Padding helpers ─────
+// parse paddings
 static PaddingType parse_padding(const std::string& text) {
     if (text == "zero")   return PaddingType::ZERO;
     if (text == "mirror") return PaddingType::MIRROR;
@@ -44,7 +45,7 @@ static std::string padding_to_string(PaddingType padding) {
     throw std::runtime_error("Unknown padding type");
 }
 
-// ───── Shell / Docker helpers ─────
+// docker helpers
 static std::string quote(const std::string& s) {
     std::string result = "\"";
     for (char ch : s) {
@@ -67,7 +68,7 @@ static std::string docker_command() {
     return "docker";
 }
 
-// ───── Metadata I/O ─────
+// I/O
 static void write_metadata(const ChunkInfo& info, int radius, PaddingType padding) {
     std::ofstream file(info.meta_path);
     if (!file) throw std::runtime_error("Could not write metadata file: " + info.meta_path.string());
@@ -81,7 +82,12 @@ static void write_metadata(const ChunkInfo& info, int radius, PaddingType paddin
     file << "input_start_row="  << info.input_start_row << "\n";
 }
 
-// ───── Chunk preparation (Docker) ─────
+/*
+ Docker Blurring Utilities
+    # --> prepare_chunks   : each chunk is processed by a docker container
+    # --> merge_chunks     : merge the processed chunks into one final output
+    # --> blur_using_docker: apply the blurring
+*/
 static std::vector<ChunkInfo> prepare_chunks(
     const cv::Mat& image, int workers, int radius,
     PaddingType padding, const fs::path& chunks_dir
@@ -119,7 +125,6 @@ static std::vector<ChunkInfo> prepare_chunks(
     return chunks;
 }
 
-// ───── Merge (Docker) ─────
 static cv::Mat merge_chunks(const std::vector<ChunkInfo>& chunks, int full_rows, int full_cols) {
     cv::Mat merged(full_rows, full_cols, CV_8UC3);
     for (const ChunkInfo& info : chunks) {
@@ -133,7 +138,6 @@ static cv::Mat merge_chunks(const std::vector<ChunkInfo>& chunks, int full_rows,
     return merged;
 }
 
-// ───── Docker blur ─────
 static cv::Mat blur_using_docker(
     const cv::Mat& image, int workers, int radius,
     const fs::path& project_dir, const fs::path& work_dir, PaddingType padding
@@ -173,18 +177,18 @@ static cv::Mat blur_using_docker(
     return merge_chunks(chunks, image.rows, image.cols);
 }
 
-// ───── Timer wrapper ─────
+// timing
 template <typename Function>
 static cv::Mat time_image_function(const std::string& label, Function func, double& milliseconds) {
     auto start  = std::chrono::high_resolution_clock::now();
     cv::Mat result = func();
     auto end    = std::chrono::high_resolution_clock::now();
     milliseconds = std::chrono::duration<double, std::milli>(end - start).count();
-    std::cout << label << " time: " << milliseconds << " ms\n";
+    std::cout << label << " time: " << milliseconds / 1000 << " s\n";
     return result;
 }
 
-// ───── Comparison log ─────
+// logging
 static void append_comparison_log(
     const fs::path& log_path, int run_id,
     const fs::path& input_path, const fs::path& output_dir,
@@ -209,27 +213,32 @@ static void append_comparison_log(
     log_file << "filter_size        => " << filter_size << " x " << filter_size << "\n";
     log_file << "radius             => " << radius << "\n";
     log_file << "padding_mode       => " << padding_to_string(padding) << "\n";
-    log_file << "serial_time_ms     => " << serial_ms << "\n";
-    log_file << "openmp_time_ms     => " << openmp_ms << "\n";
-    log_file << "docker_time_ms     => " << docker_ms << "\n";
-    log_file << "mpi_time_ms        => " << mpi_ms << "\n";
+    log_file << "serial_time_s     => " << serial_ms / 1000 << "\n";
+    log_file << "openmp_time_s     => " << openmp_ms / 1000 << "\n";
+    log_file << "docker_time_s     => " << docker_ms / 1000 << "\n";
+    log_file << "mpi_time_s        => " << mpi_ms / 1000 << "\n";
     log_file << "openmp_speedup     => " << openmp_speedup << "x\n";
     log_file << "docker_speedup     => " << docker_speedup << "x\n";
     log_file << "mpi_speedup        => " << mpi_speedup    << "x\n";
     log_file << "==================== End Run #" << run_id << " ====================\n";
 }
 
-// ═══════════════════════════════════════════════════════════
-//  main — all MPI ranks enter here
-// ═══════════════════════════════════════════════════════════
+
+static void print_title(std::string title, int n_sep) {
+    title = " " + title + " ";
+    std::string separator(n_sep, '=');
+    std::cout << separator << title << separator << std::endl;
+}
+
+// main
 int main(int argc, char** argv) {
+    // -- Read & Validate Arguments --
     MPI_Init(&argc, &argv);
 
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // ── Worker ranks ──
     if (rank != 0) {
         mpi_worker_loop();
         MPI_Finalize();
@@ -261,47 +270,56 @@ int main(int argc, char** argv) {
 
         int radius = filter_size / 2;
 
+        // --------------------------------------------------------------------
+        // -- Prepare Data --
+        
         fs::create_directories(output_dir);
         fs::path project_dir = fs::current_path();
         fs::path work_dir    = output_dir / "docker_work";
         fs::create_directories(work_dir);
-
+        
         cv::Mat image = load_color_image_or_fail(input_path.string());
-
+        
         std::cout << "Input image : " << input_path << "\n";
         std::cout << "Image size  : " << image.cols << " x " << image.rows << "\n";
         std::cout << "Workers     : " << workers << "\n";
         std::cout << "MPI procs   : " << size << "  (1 master + " << size - 1 << " workers)\n";
         std::cout << "Radius      : " << radius << "\n";
         std::cout << "Padding     : " << padding_to_string(padding) << "\n";
-
+        
         double serial_ms = 0.0, openmp_ms = 0.0, docker_ms = 0.0, mpi_ms = 0.0;
-
-        // 1. Serial
-        cv::Mat serial_result = time_image_function("Serial", [&]() {
-            return blur_serial(image, radius, padding);
-        }, serial_ms);
-        save_image_or_fail((output_dir / "blur_serial.png").string(), serial_result);
-
-        // 2. OpenMP
+        
+        std::stringstream ss;
+        ss << "Starting_Run_" << std::setw(3) << std::setfill('0') << run_id;
+        print_title(ss.str(), 50);
+        // -- Applying Blurrnig --
+        
+        
+        // cv::Mat serial_result = time_image_function("Serial", [&]() {
+        //     return blur_serial(image, radius, padding);
+        // }, serial_ms);
+        // save_image_or_fail((output_dir / "blur_serial.png").string(), serial_result);
+            
+        print_title("OpenMP Experiment", 25);
         cv::Mat openmp_result = time_image_function("OpenMP", [&]() {
             return blur_openmp(image, radius, padding);
         }, openmp_ms);
         save_image_or_fail((output_dir / "blur_openmp.png").string(), openmp_result);
-
-        // 3. Docker
+        
+        print_title("Docker Experiment", 25);
         cv::Mat docker_result = time_image_function("Docker", [&]() {
             return blur_using_docker(image, workers, radius, project_dir, work_dir, padding);
         }, docker_ms);
         save_image_or_fail((output_dir / "blur_docker.png").string(), docker_result);
-
-        // 4. MPI  ← NEW
+        
+        print_title("MPI Experiment", 25);
         cv::Mat mpi_result = time_image_function("MPI", [&]() {
             return blur_mpi(image, radius, padding);
         }, mpi_ms);
         save_image_or_fail((output_dir / "blur_mpi.png").string(), mpi_result);
-
-        // Summary
+            
+        // --------------------------------------------------------------------
+        // -- Results --
         std::cout << "\nSaved outputs:\n";
         std::cout << "  " << (output_dir / "blur_serial.png") << "\n";
         std::cout << "  " << (output_dir / "blur_openmp.png") << "\n";
@@ -323,6 +341,9 @@ int main(int argc, char** argv) {
 
         std::cout << "\nTiming log saved to: " << log_path.string() << "\n";
     }
+    // ---------------------------------------------------------------------------------
+    // -- Finishing --
+
     catch (const std::exception& ex) {
         std::cerr << "Error from Main: " << ex.what() << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 2);

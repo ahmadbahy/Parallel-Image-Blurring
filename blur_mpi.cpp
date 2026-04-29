@@ -12,9 +12,7 @@ static const int TAG_DATA   = 2;
 static const int TAG_RESULT = 3;
 static const int TAG_DONE   = 4;
 
-// ──────────────────────────────────────────────
-// Rank 0: master logic
-// ──────────────────────────────────────────────
+// master logic
 cv::Mat blur_mpi(const cv::Mat& image, int radius, PaddingType padding) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -22,13 +20,13 @@ cv::Mat blur_mpi(const cv::Mat& image, int radius, PaddingType padding) {
 
     int num_workers = size - 1;
 
-    // Fallback: if launched with a single process, just run serial
+    // 1 proc --> serial
     if (num_workers < 1) {
         std::cerr << "[MPI] Only 1 process — falling back to serial blur.\n";
         return blur_serial(image, radius, padding);
     }
 
-    // ── Prepare chunks (same logic as Docker path) ──
+    // prepare chunks
     struct ChunkMeta {
         int output_start_row;
         int output_rows;
@@ -68,11 +66,11 @@ cv::Mat blur_mpi(const cv::Mat& image, int radius, PaddingType padding) {
 
     int actual_workers = static_cast<int>(chunks.size());
 
-    // ── Send work to each worker rank ──
+    // distribute work
     for (int i = 0; i < actual_workers; ++i) {
         int dest = i + 1;
 
-        // metadata: [radius, padding, top_halo, output_rows, chunk_rows, chunk_cols]
+        
         int meta_buf[6] = {
             radius,
             static_cast<int>(padding),
@@ -83,19 +81,19 @@ cv::Mat blur_mpi(const cv::Mat& image, int radius, PaddingType padding) {
         };
         MPI_Send(meta_buf, 6, MPI_INT, dest, TAG_META, MPI_COMM_WORLD);
 
-        // pixel data
+        
         int data_size = metas[i].chunk_rows * metas[i].chunk_cols * 3;
         MPI_Send(chunks[i].data, data_size, MPI_UNSIGNED_CHAR,
                  dest, TAG_DATA, MPI_COMM_WORLD);
     }
 
-    // ── Tell any idle workers there is no work ──
+    // no work -> stop Idle
     for (int i = actual_workers; i < num_workers; ++i) {
         int dummy[6] = {0};
         MPI_Send(dummy, 6, MPI_INT, i + 1, TAG_DONE, MPI_COMM_WORLD);
     }
 
-    // ── Receive results and merge ──
+    // merging results
     cv::Mat merged(image.rows, image.cols, CV_8UC3);
 
     for (int i = 0; i < actual_workers; ++i) {
@@ -114,20 +112,17 @@ cv::Mat blur_mpi(const cv::Mat& image, int radius, PaddingType padding) {
     return merged;
 }
 
-// ──────────────────────────────────────────────
-// Rank > 0: worker logic
-// ──────────────────────────────────────────────
+// worker logic
 void mpi_worker_loop() {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    // 1. Receive metadata (or DONE signal)
+    // get metadata
     int meta_buf[6];
     MPI_Status status;
     MPI_Recv(meta_buf, 6, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
     if (status.MPI_TAG == TAG_DONE) {
-        // No work for this rank
         return;
     }
 
@@ -138,16 +133,16 @@ void mpi_worker_loop() {
     int chunk_rows    = meta_buf[4];
     int chunk_cols    = meta_buf[5];
 
-    // 2. Receive chunk pixel data
+    // get chunk data
     int data_size = chunk_rows * chunk_cols * 3;
     cv::Mat chunk(chunk_rows, chunk_cols, CV_8UC3);
     MPI_Recv(chunk.data, data_size, MPI_UNSIGNED_CHAR,
              0, TAG_DATA, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    // 3. Blur the chunk (reuses the same kernel as Docker workers)
+    // blur
     cv::Mat result = blur_docker_chunk(chunk, radius, top_halo_rows, output_rows, padding);
 
-    // 4. Send result back to rank 0
+    // send to master
     int result_size = result.rows * result.cols * 3;
     MPI_Send(result.data, result_size, MPI_UNSIGNED_CHAR,
              0, TAG_RESULT, MPI_COMM_WORLD);
